@@ -1,12 +1,20 @@
-import csv, logging, os, re, tkinter as tk
+import csv, logging, os, re
 from datetime import datetime
-from tkinter import ttk, messagebox, simpledialog, filedialog
 import bcrypt
 import psycopg2
 from dotenv import load_dotenv
 
 # Load environment variables (ensures DATABASE_URL is available)
 load_dotenv()
+
+# Safely handle Tkinter for headless server environments (like Render)
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox, simpledialog, filedialog
+    TK_OK = True
+except ImportError:
+    TK_OK = False
+    tk = ttk = messagebox = simpledialog = filedialog = None
 
 try:
     from PIL import Image, ImageTk
