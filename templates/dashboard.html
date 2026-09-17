@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="navbar nu-blue px-3 mb-4">
+    <span class="navbar-brand text-white fw-bold">NU Lab Inventory</span>
+    <div class="d-flex align-items-center">
+        <span class="text-white me-3">User: {{ session['username'] }} | Role: {{ session['role'] }} | <strong>Total Stocks: {{ total_stocks }}</strong></span>
+        <a href="{{ url_for('logout') }}" class="btn btn-danger btn-sm">Logout</a>
+    </div>
+</nav>
+
+<div class="container-fluid px-4">
+    <div class="row">
+        <!-- HARDWARE CATALOG -->
+        <div class="col-12 mb-4">
+            <div class="card shadow-sm">
+                <div class="card-header nu-yellow"><h5>Hardware Catalog</h5></div>
+                <div class="card-body">
+                    {% if session['role'] == 'ADMIN' %}
+                        <form action="{{ url_for('admin_save') }}" method="POST" class="row g-2 mb-3 align-items-end">
+                            <input type="hidden" name="item_id" id="form_item_id">
+                            <div class="col-auto"><input type="text" name="item_name" id="form_item_name" class="form-control form-control-sm" placeholder="Name" required></div>
+                            <div class="col-auto"><input type="text" name="category" id="form_category" class="form-control form-control-sm" placeholder="Category" required></div>
+                            <div class="col-auto"><input type="number" name="quantity" id="form_quantity" class="form-control form-control-sm" placeholder="Quantity" min="0" required></div>
+                            <div class="col-auto"><input type="number" name="unit_price" id="form_unit_price" class="form-control form-control-sm" placeholder="Price" step="0.01" required></div>
+                            <div class="col-auto"><button type="submit" class="btn btn-success btn-sm">Save/Update</button></div>
+                            <div class="col-auto"><button type="button" class="btn btn-secondary btn-sm" onclick="clearForm()">Clear Inputs</button></div>
+                            <div class="col-auto ms-auto"><a href="{{ url_for('export') }}" class="btn btn-secondary btn-sm">Export CSV</a></div>
+                        </form>
+                    {% endif %}
+                    
+                    <form action="{{ url_for('admin_delete') if session['role'] == 'ADMIN' else '' }}" method="POST">
+                        <table class="table table-bordered table-striped table-sm">
+                            <thead class="table-dark">
+                                <tr>
+                                    {% if session['role'] == 'ADMIN' %}<th>Select</th>{% endif %}
+                                    <th>ID</th><th>Name</th><th>Category</th><th>Qty Available</th><th>Unit Price</th><th>Status</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for item in items %}
+                                <tr>
+                                    {% if session['role'] == 'ADMIN' %}
+                                        <td><input type="checkbox" name="item_ids" value="{{ item[0] }}"></td>
+                                    {% endif %}
+                                    <td>{{ item[0] }}</td><td>{{ item[1] }}</td><td>{{ item[2] }}</td><td>{{ item[3] }}</td><td>₱{{ "%.2f"|format(item[4]) }}</td>
+                                    <td><span class="badge {{ 'bg-success' if item[5]=='In Stock' else 'bg-warning text-dark' if item[5]=='Low Stock' else 'bg-danger' }}">{{ item[5] }}</span></td>
+                                    <td>
+                                    {% if session['role'] == 'USER' %}
+                                        {% if item[3] > 0 %}
+                                            <form action="{{ url_for('borrow') }}" method="POST" class="d-flex m-0 p-0">
+                                                <input type="hidden" name="item_id" value="{{ item[0] }}">
+                                                <input type="number" name="quantity" class="form-control form-control-sm me-1" style="width: 70px;" min="1" max="{{ item[3] }}" value="1" required>
+                                                <button type="submit" class="btn btn-primary btn-sm">Borrow</button>
+                                            </form>
+                                        {% else %}
+                                            <button class="btn btn-secondary btn-sm" disabled>Out of Stock</button>
+                                        {% endif %}
+                                    {% else %}
+                                        <button type="button" class="btn btn-info btn-sm text-white" onclick="editItem('{{ item[0] }}', '{{ item[1] }}', '{{ item[2] }}', '{{ item[3] }}', '{{ item[4] }}')">Edit</button>
+                                    {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                        {% if session['role'] == 'ADMIN' %}
+                            <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete selected items?')">Delete Selected</button>
+                        {% endif %}
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        {% if session['role'] == 'USER' %}
+            <!-- USER SPECIFIC VIEWS -->
+            <div class="col-md-6 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-primary text-white"><h5>My Borrowed Items</h5></div>
+                    <div class="card-body">
+                        <form action="{{ url_for('return_request') }}" method="POST">
+                            <table class="table table-sm">
+                                <thead><tr><th>Select</th><th>Trans ID</th><th>Item ID</th><th>Qty</th><th>Timeframe</th></tr></thead>
+                                <tbody>
+                                    {% for loan in active_loans %}
+                                    <tr>
+                                        <td><input type="checkbox" name="loan_ids" value="{{ loan[0] }}"></td>
+                                        <td>{{ loan[0] }}</td><td>{{ loan[1] }}</td><td>{{ loan[2] }}</td><td>{{ loan[3] }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                            <button type="submit" class="btn btn-warning btn-sm">Request Return for Selected</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-6 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-secondary text-white"><h5>Pending Borrow Requests</h5></div>
+                    <div class="card-body">
+                        <table class="table table-sm">
+                            <thead><tr><th>Trans ID</th><th>Item ID</th><th>Qty</th><th>Status</th></tr></thead>
+                            <tbody>
+                                {% for req in pending_borrow_requests %}
+                                <tr><td>{{ req[0] }}</td><td>{{ req[1] }}</td><td>{{ req[2] }}</td><td>{{ req[4] }}</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        {% else %}
+            <!-- ADMIN SPECIFIC VIEWS -->
+            <div class="col-md-3 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-primary text-white"><h5>Pending Borrows</h5></div>
+                    <div class="card-body">
+                        <form action="{{ url_for('admin_borrow_action') }}" method="POST">
+                            <table class="table table-sm">
+                                <thead><tr><th>Select</th><th>Trans</th><th>User</th><th>Qty</th></tr></thead>
+                                <tbody>
+                                    {% for req in pending_borrows %}
+                                    <tr>
+                                        <td><input type="checkbox" name="loan_ids" value="{{ req[0] }}"></td>
+                                        <td>{{ req[0] }}</td><td>{{ req[1] }}</td><td>{{ req[3] }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                            <button type="submit" name="action" value="approve" class="btn btn-success btn-sm w-100 mb-1">Approve</button>
+                            <button type="submit" name="action" value="reject" class="btn btn-danger btn-sm w-100">Reject</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-3 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-info text-dark"><h5>Pending Returns</h5></div>
+                    <div class="card-body">
+                        <form action="{{ url_for('admin_return_action') }}" method="POST">
+                            <table class="table table-sm">
+                                <thead><tr><th>Select</th><th>Trans</th><th>User</th><th>Qty</th></tr></thead>
+                                <tbody>
+                                    {% for req in pending_returns %}
+                                    <tr>
+                                        <td><input type="checkbox" name="loan_ids" value="{{ req[0] }}"></td>
+                                        <td>{{ req[0] }}</td><td>{{ req[1] }}</td><td>{{ req[3] }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                            <button type="submit" name="action" value="approve" class="btn btn-success btn-sm w-100 mb-1">Approve</button>
+                            <button type="submit" name="action" value="reject" class="btn btn-danger btn-sm w-100">Reject</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-3 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-danger text-white"><h5>Reset Requests</h5></div>
+                    <div class="card-body">
+                        <form action="{{ url_for('admin_reset_action') }}" method="POST">
+                            <table class="table table-sm">
+                                <thead><tr><th>Select</th><th>Req</th><th>User</th></tr></thead>
+                                <tbody>
+                                    {% for req in pending_resets %}
+                                    <tr>
+                                        <td><input type="checkbox" name="request_ids" value="{{ req[0] }}"></td>
+                                        <td>{{ req[0] }}</td><td>{{ req[1] }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                            <button type="submit" name="action" value="approve" class="btn btn-success btn-sm w-100 mb-1">Approve</button>
+                            <button type="submit" name="action" value="reject" class="btn btn-danger btn-sm w-100">Reject</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-3 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-dark text-white"><h5>Admin Registrations</h5></div>
+                    <div class="card-body">
+                        <form action="{{ url_for('admin_approve_admin') }}" method="POST">
+                            <table class="table table-sm">
+                                <thead><tr><th>Select</th><th>User</th></tr></thead>
+                                <tbody>
+                                    {% for admin in pending_admins %}
+                                    <tr>
+                                        <td><input type="checkbox" name="usernames" value="{{ admin[0] }}"></td>
+                                        <td>{{ admin[0] }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                            <button type="submit" class="btn btn-success btn-sm w-100">Approve Admins</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+    function editItem(id, name, cat, qty, price) {
+        document.getElementById('form_item_id').value = id;
+        document.getElementById('form_item_name').value = name;
+        document.getElementById('form_category').value = cat;
+        document.getElementById('form_quantity').value = qty;
+        document.getElementById('form_unit_price').value = price;
+    }
+    function clearForm() {
+        document.getElementById('form_item_id').value = '';
+        document.getElementById('form_item_name').value = '';
+        document.getElementById('form_category').value = '';
+        document.getElementById('form_quantity').value = '';
+        document.getElementById('form_unit_price').value = '';
+    }
+</script>
+{% endblock %}

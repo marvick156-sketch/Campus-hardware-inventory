@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-5">
+            <div class="card shadow">
+                <div class="card-header nu-blue text-center">
+                    <h4>National University<br>Laboratory Inventory System</h4>
+                </div>
+                <div class="card-body p-4">
+                    <form action="{{ url_for('login') }}" method="POST">
+                        <div class="mb-3">
+                            <label>Username</label>
+                            <input type="text" name="username" class="form-control" required value="{{ locked_username if locked_username else '' }}" {{ 'disabled' if locked }}>
+                        </div>
+                        <div class="mb-3">
+                            <label>Password</label>
+                            <input type="password" name="password" class="form-control" required {{ 'disabled' if locked }}>
+                        </div>
+                        {% if not locked %}
+                            <button type="submit" class="btn nu-yellow w-100 mb-2">Login</button>
+                        {% else %}
+                            <p class="text-danger fw-bold text-center">Account Locked. Please request a reset.</p>
+                        {% endif %}
+                    </form>
+                    <div class="text-center mt-3">
+                        <a href="{{ url_for('register') }}" class="text-decoration-none">Register Account</a> | 
+                        <a href="{{ url_for('reset_request') }}" class="text-danger text-decoration-none">Request Password Reset</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
