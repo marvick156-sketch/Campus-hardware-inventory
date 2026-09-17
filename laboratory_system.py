@@ -1,7 +1,12 @@
-import csv, logging, os, re, sqlite3, tkinter as tk
+import csv, logging, os, re, tkinter as tk
 from datetime import datetime
 from tkinter import ttk, messagebox, simpledialog, filedialog
 import bcrypt
+import psycopg2
+from dotenv import load_dotenv
+
+# Load environment variables (ensures DATABASE_URL is available)
+load_dotenv()
 
 try:
     from PIL import Image, ImageTk
@@ -11,7 +16,7 @@ except ImportError:
 
 # ========================= CONFIG =========================
 NU_BLUE, NU_YELLOW = '#0033A0', '#FFD100'
-DB_NAME, LOG_DIR = 'campus_inventory.db', 'app_logging'
+LOG_DIR = 'app_logging'
 EMAIL_RE = re.compile(r'^[\w.\-]+@[\w.\-]+\.\w+$')
 PASSWORD_RE = re.compile(r'^(?=.*[A-Z])(?=.*\d)(?=.*[@#$%^&*]).{8,}$')
 
@@ -21,12 +26,40 @@ logging.basicConfig(filename=os.path.join(LOG_DIR, 'app.log'), level=logging.INF
                     datefmt='%Y-%m-%d %H:%M:%S')
 log = logging.getLogger('HardwareApp')
 
+# ========================= SUPABASE CONNECTION SHIM =========================
+class DBConnection:
+    """Wrapper to make psycopg2 act like the previous sqlite3 connection workflow."""
+    def __init__(self):
+        db_url = os.environ.get("DATABASE_URL")
+        if not db_url:
+            raise ValueError("DATABASE_URL is missing. Please check your .env file.")
+        self.conn = psycopg2.connect(db_url)
+        
+    def __enter__(self):
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.conn.commit()
+        else:
+            self.conn.rollback()
+        self.conn.close()
+        
+    def execute(self, sql, args=()):
+        cur = self.conn.cursor()
+        cur.execute(sql, args)
+        return cur
+        
+    def executemany(self, sql, args=()):
+        cur = self.conn.cursor()
+        cur.executemany(sql, args)
+        return cur
+        
+    def cursor(self):
+        return self.conn.cursor()
 
 def db():
-    c = sqlite3.connect(DB_NAME)
-    c.execute('PRAGMA foreign_keys=ON')
-    return c
-
+    return DBConnection()
 
 def q(sql, args=(), one=False, many=False):
     with db() as c:
@@ -34,72 +67,76 @@ def q(sql, args=(), one=False, many=False):
         if many: return cur.fetchall()
         return cur.fetchone() if one else None
 
-
 def exec_sql(sql, args=(), many=False):
     with db() as c:
         if many: c.executemany(sql, args)
         else: c.execute(sql, args)
 
-
 def status(qty):
     return 'In Stock' if qty > 10 else 'Low Stock' if qty > 0 else 'Out of Stock'
-
 
 def valid_email(x): return bool(EMAIL_RE.match(x))
 def valid_password(x): return bool(PASSWORD_RE.match(x))
 def now(): return datetime.now().isoformat(timespec='seconds')
 def hashed(p): return bcrypt.hashpw(p.encode(), bcrypt.gensalt()).decode()
 
-
 def has_col(cur, table, col):
-    return col in {r[1] for r in cur.execute(f'PRAGMA table_info({table})')}
-
+    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s AND column_name=%s", (table, col))
+    return bool(cur.fetchone())
 
 def init_db():
     try:
         with db() as c:
             cur = c.cursor()
+            # PostgreSQL uses SERIAL instead of AUTOINCREMENT
             cur.execute('''CREATE TABLE IF NOT EXISTS users(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
+                id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL,
                 email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL,
-                failed_attempts INTEGER DEFAULT 0, is_locked BOOLEAN DEFAULT 0,
+                failed_attempts INTEGER DEFAULT 0, is_locked BOOLEAN DEFAULT FALSE,
                 account_status TEXT DEFAULT 'Active')''')
+                
             for col, typ in [('account_status', "TEXT DEFAULT 'Active'"),
                              ('failed_attempts', 'INTEGER DEFAULT 0'),
-                             ('is_locked', 'BOOLEAN DEFAULT 0')]:
+                             ('is_locked', 'BOOLEAN DEFAULT FALSE')]:
                 if not has_col(cur, 'users', col):
                     cur.execute(f'ALTER TABLE users ADD COLUMN {col} {typ}')
                     log.info('Migrated users table: added %s.', col)
+                    
             cur.execute('''CREATE TABLE IF NOT EXISTS hardware(
-                item_id INTEGER PRIMARY KEY AUTOINCREMENT, item_name TEXT NOT NULL,
+                item_id SERIAL PRIMARY KEY, item_name TEXT NOT NULL,
                 category TEXT NOT NULL, quantity INTEGER NOT NULL,
                 unit_price REAL NOT NULL, status TEXT NOT NULL)''')
+                
             cur.execute('''CREATE TABLE IF NOT EXISTS password_resets(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL,
+                id SERIAL PRIMARY KEY, username TEXT NOT NULL,
                 new_password_hash TEXT NOT NULL, status TEXT DEFAULT 'Pending',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                
             cur.execute('''CREATE TABLE IF NOT EXISTS transactions(
-                trans_id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER,
+                trans_id SERIAL PRIMARY KEY, item_id INTEGER,
                 username TEXT, qty INTEGER, timeframe TEXT, status TEXT DEFAULT 'Pending',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(item_id) REFERENCES hardware(item_id))''')
+                
             for table in ('password_resets', 'transactions'):
                 if not has_col(cur, table, 'created_at'):
-                    cur.execute(f'ALTER TABLE {table} ADD COLUMN created_at TEXT')
+                    cur.execute(f'ALTER TABLE {table} ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
                     log.info('Migrated %s table: added created_at.', table)
-            for item_id, qty in cur.execute('SELECT item_id, quantity FROM hardware').fetchall():
-                cur.execute('UPDATE hardware SET status=? WHERE item_id=?', (status(qty), item_id))
-            admin = cur.execute("SELECT id FROM users WHERE role='ADMIN' AND account_status='Active' LIMIT 1").fetchone()
+                    
+            for item_id, qty in c.execute('SELECT item_id, quantity FROM hardware').fetchall():
+                c.execute('UPDATE hardware SET status=%s WHERE item_id=%s', (status(qty), item_id))
+                
+            admin = c.execute("SELECT id FROM users WHERE role='ADMIN' AND account_status='Active' LIMIT 1").fetchone()
             if not admin:
-                existing = cur.execute("SELECT id FROM users WHERE username='admin' LIMIT 1").fetchone()
+                existing = c.execute("SELECT id FROM users WHERE username='admin' LIMIT 1").fetchone()
                 if existing:
-                    cur.execute("UPDATE users SET account_status='Active',is_locked=0,failed_attempts=0 WHERE id=?", (existing[0],))
+                    c.execute("UPDATE users SET account_status='Active',is_locked=FALSE,failed_attempts=0 WHERE id=%s", (existing[0],))
                     log.info('Existing admin account activated.')
                 else:
-                    cur.execute('''INSERT INTO users(username,email,password_hash,role,account_status)
-                                   VALUES(?,?,?,?,?)''', ('admin','admin@nu.edu.ph',hashed('Admin@123'),'ADMIN','Active'))
+                    c.execute('''INSERT INTO users(username,email,password_hash,role,account_status)
+                                   VALUES(%s,%s,%s,%s,%s)''', ('admin','admin@nu.edu.ph',hashed('Admin@123'),'ADMIN','Active'))
                     log.info('Default ADMIN account created (admin / Admin@123).')
-    except sqlite3.Error:
+    except psycopg2.Error:
         log.exception('Database setup error')
         raise
 
@@ -110,7 +147,7 @@ class AuthController:
     @staticmethod
     def login_user(username, password):
         try:
-            row = q('SELECT password_hash, role, account_status, failed_attempts, is_locked, email FROM users WHERE username=?', (username,), True)
+            row = q('SELECT password_hash, role, account_status, failed_attempts, is_locked, email FROM users WHERE username=%s', (username,), True)
             if not row: return False, "User not found.", None, False, None
             h, r, st, attempts, locked, email = row
             
@@ -122,19 +159,19 @@ class AuthController:
             except ValueError: ok = False
 
             if ok:
-                exec_sql('UPDATE users SET failed_attempts=0 WHERE username=?', (username,))
+                exec_sql('UPDATE users SET failed_attempts=0 WHERE username=%s', (username,))
                 log.info("User '%s' logged in successfully via web.", username)
                 return True, "Login successful.", r, False, email
 
             attempts = (attempts or 0) + 1
             if attempts >= 3:
-                exec_sql('UPDATE users SET failed_attempts=?, is_locked=1 WHERE username=?', (attempts, username))
+                exec_sql('UPDATE users SET failed_attempts=%s, is_locked=TRUE WHERE username=%s', (attempts, username))
                 log.warning("Account '%s' locked due to failed login attempts.", username)
                 return False, "Account locked after 3 failed attempts.", None, True, None
 
-            exec_sql('UPDATE users SET failed_attempts=? WHERE username=?', (attempts, username))
+            exec_sql('UPDATE users SET failed_attempts=%s WHERE username=%s', (attempts, username))
             return False, f"Invalid password. {3 - attempts} attempt(s) left.", None, False, None
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception('Login DB error')
             return False, "Database error during login.", None, False, None
 
@@ -144,14 +181,14 @@ class AuthController:
         if not valid_password(password): return False, "Password needs 8+ chars, uppercase, number, special char."
         try:
             st = 'Pending' if role == 'ADMIN' else 'Active'
-            exec_sql('INSERT INTO users(username, email, password_hash, role, account_status) VALUES(?,?,?,?,?)',
+            exec_sql('INSERT INTO users(username, email, password_hash, role, account_status) VALUES(%s,%s,%s,%s,%s)',
                      (username, email, hashed(password), role, st))
             log.info("Registered %s account: %s (status=%s)", role, username, st)
             msg = "Registration submitted. Admin accounts require approval." if role == 'ADMIN' else "Registered successfully."
             return True, msg
-        except sqlite3.IntegrityError:
+        except psycopg2.IntegrityError:
             return False, "Username or Email already exists."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception('Registration DB error')
             return False, "Database error during registration."
 
@@ -159,15 +196,15 @@ class AuthController:
     def submit_password_reset_request(username, email, new_password):
         if not valid_password(new_password): return False, "New password needs 8+ chars, uppercase, number, special char."
         try:
-            if not q('SELECT id FROM users WHERE username=? AND email=?', (username, email), True):
+            if not q('SELECT id FROM users WHERE username=%s AND email=%s', (username, email), True):
                 return False, "Username and Email do not match our records."
             with db() as c:
-                c.execute("DELETE FROM password_resets WHERE username=? AND status='Pending'", (username,))
-                c.execute("INSERT INTO password_resets(username, new_password_hash, status, created_at) VALUES(?,?,?,?)",
+                c.execute("DELETE FROM password_resets WHERE username=%s AND status='Pending'", (username,))
+                c.execute("INSERT INTO password_resets(username, new_password_hash, status, created_at) VALUES(%s,%s,%s,%s)",
                           (username, hashed(new_password), 'Pending', now()))
             log.info("Password reset requested for '%s'.", username)
             return True, "Password reset request submitted for Admin approval."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception('Reset request DB error')
             return False, "Database error submitting reset request."
 
@@ -186,10 +223,10 @@ class AuthController:
         try:
             with db() as c:
                 for u in usernames:
-                    changed = c.execute("UPDATE users SET account_status='Active' WHERE username=? AND role='ADMIN' AND account_status='Pending'", (u,)).rowcount
+                    changed = c.execute("UPDATE users SET account_status='Active' WHERE username=%s AND role='ADMIN' AND account_status='Pending'", (u,)).rowcount
                     count += changed
             return True, f"Approved {count} admin account(s)."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception("Approve admin error")
             return False, "Database error approving admins."
 
@@ -197,14 +234,14 @@ class AuthController:
     def change_password_direct(username, email, old_password, new_password):
         if not valid_password(new_password): return False, "New password does not meet complexity requirements."
         try:
-            row = q('SELECT password_hash FROM users WHERE username=?', (username,), True)
+            row = q('SELECT password_hash FROM users WHERE username=%s', (username,), True)
             if not row or not bcrypt.checkpw(old_password.encode(), row[0].encode()):
                 return False, "Incorrect current password."
-            exec_sql('UPDATE users SET password_hash=?, failed_attempts=0, is_locked=0 WHERE username=?',
+            exec_sql('UPDATE users SET password_hash=%s, failed_attempts=0, is_locked=FALSE WHERE username=%s',
                      (hashed(new_password), username))
             log.info("User %s changed password via web.", username)
             return True, "Password updated successfully."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception("Change password DB error")
             return False, "Database error updating password."
 
@@ -215,19 +252,19 @@ class AuthController:
         try:
             with db() as c:
                 for rid in request_ids:
-                    row = c.execute("SELECT username, new_password_hash FROM password_resets WHERE id=? AND status='Pending'", (rid,)).fetchone()
+                    row = c.execute("SELECT username, new_password_hash FROM password_resets WHERE id=%s AND status='Pending'", (rid,)).fetchone()
                     if row:
                         u, h = row
                         if approve:
-                            c.execute("UPDATE users SET password_hash=?, failed_attempts=0, is_locked=0, account_status='Active' WHERE username=?", (h, u))
-                            c.execute("UPDATE password_resets SET status='Approved' WHERE id=?", (rid,))
+                            c.execute("UPDATE users SET password_hash=%s, failed_attempts=0, is_locked=FALSE, account_status='Active' WHERE username=%s", (h, u))
+                            c.execute("UPDATE password_resets SET status='Approved' WHERE id=%s", (rid,))
                             log.info("Admin approved reset %s for %s", rid, u)
                         else:
-                            c.execute("UPDATE password_resets SET status='Rejected' WHERE id=?", (rid,))
+                            c.execute("UPDATE password_resets SET status='Rejected' WHERE id=%s", (rid,))
                             log.info("Admin rejected reset %s for %s", rid, u)
                         count += 1
             return True, f"Processed {count} reset request(s)."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception("Process reset DB error")
             return False, "Database error processing resets."
 
@@ -237,8 +274,8 @@ class InventoryController:
     def get_all_items(search_text="", category="ALL"):
         s = f"%{search_text}%"
         if category == "ALL":
-            return q('SELECT item_id, item_name, category, quantity, unit_price, status FROM hardware WHERE item_name LIKE ? OR category LIKE ? ORDER BY item_id', (s, s), many=True) or []
-        return q('SELECT item_id, item_name, category, quantity, unit_price, status FROM hardware WHERE (item_name LIKE ? OR category LIKE ?) AND category=? ORDER BY item_id', (s, s, category), many=True) or []
+            return q('SELECT item_id, item_name, category, quantity, unit_price, status FROM hardware WHERE item_name LIKE %s OR category LIKE %s ORDER BY item_id', (s, s), many=True) or []
+        return q('SELECT item_id, item_name, category, quantity, unit_price, status FROM hardware WHERE (item_name LIKE %s OR category LIKE %s) AND category=%s ORDER BY item_id', (s, s, category), many=True) or []
 
     @staticmethod
     def get_categories():
@@ -247,15 +284,15 @@ class InventoryController:
 
     @staticmethod
     def get_user_active_loans(username):
-        return q("SELECT trans_id, item_id, qty, timeframe, status, created_at FROM transactions WHERE username=? AND status='Approved' ORDER BY trans_id DESC", (username,), many=True) or []
+        return q("SELECT trans_id, item_id, qty, timeframe, status, created_at FROM transactions WHERE username=%s AND status='Approved' ORDER BY trans_id DESC", (username,), many=True) or []
 
     @staticmethod
     def get_user_pending_borrows(username):
-        return q("SELECT trans_id, item_id, qty, timeframe, status, created_at FROM transactions WHERE username=? AND status='Pending' ORDER BY trans_id DESC", (username,), many=True) or []
+        return q("SELECT trans_id, item_id, qty, timeframe, status, created_at FROM transactions WHERE username=%s AND status='Pending' ORDER BY trans_id DESC", (username,), many=True) or []
 
     @staticmethod
     def get_user_loan_history(username):
-        return q("SELECT trans_id, item_id, qty, timeframe, status, created_at FROM transactions WHERE username=? ORDER BY trans_id DESC", (username,), many=True) or []
+        return q("SELECT trans_id, item_id, qty, timeframe, status, created_at FROM transactions WHERE username=%s ORDER BY trans_id DESC", (username,), many=True) or []
 
     @staticmethod
     def get_pending_returns():
@@ -273,15 +310,15 @@ class InventoryController:
     def borrow_item(username, item_id, quantity):
         try:
             with db() as c:
-                current = c.execute('SELECT item_name, quantity FROM hardware WHERE item_id=?', (item_id,)).fetchone()
+                current = c.execute('SELECT item_name, quantity FROM hardware WHERE item_id=%s', (item_id,)).fetchone()
                 if not current: return False, "Hardware item no longer exists."
                 name, available = current
                 if quantity > available: return False, f"Only {available} unit(s) of '{name}' are currently available."
-                c.execute("INSERT INTO transactions(item_id, username, qty, timeframe, status, created_at) VALUES(?,?,?,?,?,?)",
+                c.execute("INSERT INTO transactions(item_id, username, qty, timeframe, status, created_at) VALUES(%s,%s,%s,%s,%s,%s)",
                           (item_id, username, quantity, "Web Request", 'Pending', now()))
             log.info("User %s requested to borrow %s of item %s.", username, quantity, item_id)
             return True, "Borrow request submitted for Admin approval."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception("Borrow request DB error")
             return False, "Database error submitting borrow request."
 
@@ -292,11 +329,11 @@ class InventoryController:
         try:
             with db() as c:
                 for tid in loan_ids:
-                    changed = c.execute("UPDATE transactions SET status='Returned' WHERE trans_id=? AND status='Approved'", (tid,)).rowcount
+                    changed = c.execute("UPDATE transactions SET status='Returned' WHERE trans_id=%s AND status='Approved'", (tid,)).rowcount
                     count += changed
             log.info("Flagged %s transactions as returned.", count)
             return True, f"Requested return for {count} item(s)."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception("Return request DB error")
             return False, "Database error requesting return."
 
@@ -306,16 +343,16 @@ class InventoryController:
         try:
             with db() as c:
                 if item_id:
-                    c.execute('UPDATE hardware SET item_name=?, category=?, quantity=?, unit_price=?, status=? WHERE item_id=?',
+                    c.execute('UPDATE hardware SET item_name=%s, category=%s, quantity=%s, unit_price=%s, status=%s WHERE item_id=%s',
                               (name, category, quantity, unit_price, status(quantity), item_id))
                     log.info("Updated item ID %s.", item_id)
                     return True, "Hardware item updated successfully."
                 else:
-                    c.execute('INSERT INTO hardware(item_name, category, quantity, unit_price, status) VALUES(?,?,?,?,?)',
+                    c.execute('INSERT INTO hardware(item_name, category, quantity, unit_price, status) VALUES(%s,%s,%s,%s,%s)',
                               (name, category, quantity, unit_price, status(quantity)))
                     log.info("Added inventory item '%s'.", name)
                     return True, "Hardware item added successfully."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception("Save item DB error")
             return False, "Database error saving item."
 
@@ -326,12 +363,12 @@ class InventoryController:
         try:
             with db() as c:
                 for iid in item_ids:
-                    if c.execute('SELECT COUNT(*) FROM transactions WHERE item_id=?', (iid,)).fetchone()[0]:
+                    if c.execute('SELECT COUNT(*) FROM transactions WHERE item_id=%s', (iid,)).fetchone()[0]:
                         continue
-                    c.execute('DELETE FROM hardware WHERE item_id=?', (iid,))
+                    c.execute('DELETE FROM hardware WHERE item_id=%s', (iid,))
                     count += 1
             return True, f"Deleted {count} hardware item(s)."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception("Delete items DB error")
             return False, "Database error deleting items."
 
@@ -342,22 +379,22 @@ class InventoryController:
         try:
             with db() as c:
                 for tid in loan_ids:
-                    req = c.execute("SELECT item_id, qty, username FROM transactions WHERE trans_id=? AND status='Pending'", (tid,)).fetchone()
+                    req = c.execute("SELECT item_id, qty, username FROM transactions WHERE trans_id=%s AND status='Pending'", (tid,)).fetchone()
                     if not req: continue
                     item_id, qty, u = req
                     
                     if approve:
-                        hw = c.execute("SELECT quantity FROM hardware WHERE item_id=?", (item_id,)).fetchone()
+                        hw = c.execute("SELECT quantity FROM hardware WHERE item_id=%s", (item_id,)).fetchone()
                         if hw and hw[0] >= qty:
                             new_qty = hw[0] - qty
-                            c.execute("UPDATE hardware SET quantity=?, status=? WHERE item_id=?", (new_qty, status(new_qty), item_id))
-                            c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=?", (tid,))
+                            c.execute("UPDATE hardware SET quantity=%s, status=%s WHERE item_id=%s", (new_qty, status(new_qty), item_id))
+                            c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=%s", (tid,))
                             count += 1
                     else:
-                        c.execute("UPDATE transactions SET status='Rejected' WHERE trans_id=?", (tid,))
+                        c.execute("UPDATE transactions SET status='Rejected' WHERE trans_id=%s", (tid,))
                         count += 1
             return True, f"Processed {count} borrow request(s)."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception("Process borrow DB error")
             return False, "Database error processing borrows."
 
@@ -368,22 +405,22 @@ class InventoryController:
         try:
             with db() as c:
                 for tid in loan_ids:
-                    req = c.execute("SELECT item_id, qty FROM transactions WHERE trans_id=? AND status='Returned'", (tid,)).fetchone()
+                    req = c.execute("SELECT item_id, qty FROM transactions WHERE trans_id=%s AND status='Returned'", (tid,)).fetchone()
                     if not req: continue
                     item_id, qty = req
                     
                     if approve:
-                        hw = c.execute("SELECT quantity FROM hardware WHERE item_id=?", (item_id,)).fetchone()
+                        hw = c.execute("SELECT quantity FROM hardware WHERE item_id=%s", (item_id,)).fetchone()
                         if hw:
                             new_qty = hw[0] + qty
-                            c.execute("UPDATE hardware SET quantity=?, status=? WHERE item_id=?", (new_qty, status(new_qty), item_id))
-                            c.execute("UPDATE transactions SET status='Completed' WHERE trans_id=?", (tid,))
+                            c.execute("UPDATE hardware SET quantity=%s, status=%s WHERE item_id=%s", (new_qty, status(new_qty), item_id))
+                            c.execute("UPDATE transactions SET status='Completed' WHERE trans_id=%s", (tid,))
                             count += 1
                     else:
-                        c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=?", (tid,))
+                        c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=%s", (tid,))
                         count += 1
             return True, f"Processed {count} return request(s)."
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception("Process return DB error")
             return False, "Database error processing returns."
 
@@ -480,19 +517,19 @@ class AuthWindow:
         if not valid_email(e): return messagebox.showwarning('Error','Invalid email format.')
         if not valid_password(p): return messagebox.showwarning('Error','Password needs 8+ characters, 1 uppercase, 1 number, and 1 special character (@#$%^&*).')
         try:
-            exec_sql('INSERT INTO users(username,email,password_hash,role,account_status) VALUES(?,?,?,?,?)',(u,e,hashed(p),r,'Pending' if r=='ADMIN' else 'Active'))
+            exec_sql('INSERT INTO users(username,email,password_hash,role,account_status) VALUES(%s,%s,%s,%s,%s)',(u,e,hashed(p),r,'Pending' if r=='ADMIN' else 'Active'))
             st='Pending' if r=='ADMIN' else 'Active'; log.info('Registered %s account: %s (status=%s)',r,u,st)
             messagebox.showinfo('Success','Registration submitted. Admin accounts require approval before they can log in.' if r=='ADMIN' else 'Registered successfully.')
             self.login_screen()
-        except sqlite3.IntegrityError: messagebox.showerror('Error','Username or Email already exists.')
-        except sqlite3.Error:
+        except psycopg2.IntegrityError: messagebox.showerror('Error','Username or Email already exists.')
+        except psycopg2.Error:
             log.exception('Registration database error'); messagebox.showerror('Database Error','Unable to register account.')
 
     def login(self):
         u,p=self.e_user.get().strip(),self.e_pass.get()
         if not u or not p: return messagebox.showwarning('Error','Fields cannot be blank.')
         try:
-            row=q('SELECT password_hash,role,account_status,failed_attempts,is_locked FROM users WHERE username=?',(u,),True)
+            row=q('SELECT password_hash,role,account_status,failed_attempts,is_locked FROM users WHERE username=%s',(u,),True)
             if not row: return messagebox.showerror('Error','User not found.')
             h,r,st,attempts,locked=row
             if st=='Pending': return messagebox.showwarning('Pending','This account is still pending approval by an Admin.')
@@ -501,14 +538,14 @@ class AuthWindow:
             try: ok=bcrypt.checkpw(p.encode(),h.encode())
             except ValueError: ok=False
             if ok:
-                exec_sql('UPDATE users SET failed_attempts=0 WHERE username=?',(u,)); log.info("User '%s' logged in successfully.",u); return self.success(u,r)
+                exec_sql('UPDATE users SET failed_attempts=0 WHERE username=%s',(u,)); log.info("User '%s' logged in successfully.",u); return self.success(u,r)
             attempts=(attempts or 0)+1
             if attempts>=3:
-                exec_sql('UPDATE users SET failed_attempts=?,is_locked=1 WHERE username=?',(attempts,u)); msg='Account locked after 3 failed attempts. Request a password reset.'; log.warning("Account '%s' locked due to failed login attempts.",u)
+                exec_sql('UPDATE users SET failed_attempts=%s,is_locked=TRUE WHERE username=%s',(attempts,u)); msg='Account locked after 3 failed attempts. Request a password reset.'; log.warning("Account '%s' locked due to failed login attempts.",u)
             else:
-                exec_sql('UPDATE users SET failed_attempts=? WHERE username=?',(attempts,u)); msg=f'Invalid password. {3-attempts} attempt(s) left.'
+                exec_sql('UPDATE users SET failed_attempts=%s WHERE username=%s',(attempts,u)); msg=f'Invalid password. {3-attempts} attempt(s) left.'
             messagebox.showerror('Login Failed',msg)
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception('Login database error'); messagebox.showerror('Database Error','Unable to complete login.')
 
     def submit_reset(self):
@@ -516,12 +553,12 @@ class AuthWindow:
         if not u or not e or not p: return messagebox.showwarning('Error','All fields are required.')
         if not valid_password(p): return messagebox.showwarning('Error','New password needs 8+ characters, 1 uppercase, 1 number, and 1 special character.')
         try:
-            if not q('SELECT id FROM users WHERE username=? AND email=?',(u,e),True): return messagebox.showerror('Error','Username and Email do not match our records.')
+            if not q('SELECT id FROM users WHERE username=%s AND email=%s',(u,e),True): return messagebox.showerror('Error','Username and Email do not match our records.')
             with db() as c:
-                c.execute("DELETE FROM password_resets WHERE username=? AND status='Pending'",(u,))
-                c.execute("INSERT INTO password_resets(username,new_password_hash,status,created_at) VALUES(?,?,?,?)",(u,hashed(p),'Pending',now()))
+                c.execute("DELETE FROM password_resets WHERE username=%s AND status='Pending'",(u,))
+                c.execute("INSERT INTO password_resets(username,new_password_hash,status,created_at) VALUES(%s,%s,%s,%s)",(u,hashed(p),'Pending',now()))
             log.info("Password reset requested for '%s'.",u); messagebox.showinfo('Success','Password reset request submitted for Admin approval.'); self.login_screen()
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception('Password reset request error'); messagebox.showerror('Database Error','Unable to submit password reset request.')
 
 
@@ -564,8 +601,8 @@ class App:
     def load_inventory(self):
         if not hasattr(self,'tree'): return
         s=f'%{self.search.get().strip()}%'
-        try: fill_tree(self.tree,q('SELECT item_id,item_name,category,quantity,unit_price,status FROM hardware WHERE item_name LIKE ? OR category LIKE ? ORDER BY item_id',(s,s),many=True))
-        except sqlite3.Error:
+        try: fill_tree(self.tree,q('SELECT item_id,item_name,category,quantity,unit_price,status FROM hardware WHERE item_name LIKE %s OR category LIKE %s ORDER BY item_id',(s,s),many=True))
+        except psycopg2.Error:
             log.exception('Inventory load error'); messagebox.showerror('Database Error','Unable to load inventory.')
 
     def clear_inventory(self):
@@ -589,10 +626,10 @@ class App:
         except ValueError: return messagebox.showerror('Error','Quantity must be a non-negative integer and Price must be a non-negative number.')
         try:
             with db() as c:
-                if self.sel.get(): c.execute('UPDATE hardware SET item_name=?,category=?,quantity=?,unit_price=?,status=? WHERE item_id=?',(name,cat,qty,price,status(qty),self.sel.get())); action=f'updated item ID {self.sel.get()}'
-                else: c.execute('INSERT INTO hardware(item_name,category,quantity,unit_price,status) VALUES(?,?,?,?,?)',(name,cat,qty,price,status(qty))); action=f"added inventory item '{name}'"
+                if self.sel.get(): c.execute('UPDATE hardware SET item_name=%s,category=%s,quantity=%s,unit_price=%s,status=%s WHERE item_id=%s',(name,cat,qty,price,status(qty),self.sel.get())); action=f'updated item ID {self.sel.get()}'
+                else: c.execute('INSERT INTO hardware(item_name,category,quantity,unit_price,status) VALUES(%s,%s,%s,%s,%s)',(name,cat,qty,price,status(qty))); action=f"added inventory item '{name}'"
             log.info('ADMIN %s %s.',self.username,action); self.clear_inventory(); messagebox.showinfo('Success','Hardware item saved successfully.')
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception('Save inventory error'); messagebox.showerror('Database Error','Unable to save the hardware item.')
 
     def delete_item(self):
@@ -601,10 +638,10 @@ class App:
         if not messagebox.askyesno('Confirm','Are you sure you want to delete this hardware item?'): return
         try:
             with db() as c:
-                if c.execute('SELECT COUNT(*) FROM transactions WHERE item_id=?',(item,)).fetchone()[0]: return messagebox.showwarning('Cannot Delete','This item has transaction history and cannot be deleted. Keep it in the catalog for record integrity.')
-                c.execute('DELETE FROM hardware WHERE item_id=?',(item,))
+                if c.execute('SELECT COUNT(*) FROM transactions WHERE item_id=%s',(item,)).fetchone()[0]: return messagebox.showwarning('Cannot Delete','This item has transaction history and cannot be deleted. Keep it in the catalog for record integrity.')
+                c.execute('DELETE FROM hardware WHERE item_id=%s',(item,))
             log.info('ADMIN %s deleted item ID %s.',self.username,item); self.clear_inventory(); messagebox.showinfo('Success','Hardware item deleted.')
-        except sqlite3.Error:
+        except psycopg2.Error:
             log.exception('Delete inventory error'); messagebox.showerror('Database Error','Unable to delete the hardware item.')
 
     def export_csv(self):
@@ -614,7 +651,7 @@ class App:
             if not path:return
             with open(path,'w',newline='',encoding='utf-8-sig') as f: csv.writer(f).writerows([['ID','Name','Category','Qty','Price','Status'],*rows])
             log.info('User %s exported inventory CSV to %s.',self.username,path); messagebox.showinfo('Success',f'Inventory exported successfully to:\n{path}')
-        except (OSError,sqlite3.Error): log.exception('CSV export error'); messagebox.showerror('Export Error','Unable to export the inventory.')
+        except (OSError,psycopg2.Error): log.exception('CSV export error'); messagebox.showerror('Export Error','Unable to export the inventory.')
 
     # ---------------- BORROW / RETURN ----------------
     def borrow_request(self):
@@ -630,13 +667,13 @@ class App:
                     if available<=0: messagebox.showwarning('Unavailable',f"'{name}' is currently out of stock."); continue
                     qty=simpledialog.askinteger('Quantity',f"How many '{name}' do you want to borrow?\nAvailable: {available}",minvalue=1,maxvalue=available,parent=self.root)
                     if qty is None:continue
-                    current=c.execute('SELECT quantity FROM hardware WHERE item_id=?',(item_id,)).fetchone()
+                    current=c.execute('SELECT quantity FROM hardware WHERE item_id=%s',(item_id,)).fetchone()
                     if not current: messagebox.showwarning('Unavailable',f"'{name}' no longer exists."); continue
                     if qty>int(current[0]): messagebox.showwarning('Unavailable',f"Only {current[0]} unit(s) of '{name}' are currently available."); continue
-                    c.execute("INSERT INTO transactions(item_id,username,qty,timeframe,status,created_at) VALUES(?,?,?,?,?,?)",(item_id,self.username,qty,tf.strip(),'Pending',now())); made+=1
+                    c.execute("INSERT INTO transactions(item_id,username,qty,timeframe,status,created_at) VALUES(%s,%s,%s,%s,%s,%s)",(item_id,self.username,qty,tf.strip(),'Pending',now())); made+=1
             if made: log.info('User %s submitted %d borrow request(s).',self.username,made); messagebox.showinfo('Success',f'{made} borrow request(s) submitted for Admin approval.')
             self.load_borrowed()
-        except sqlite3.Error: log.exception('Borrow request error'); messagebox.showerror('Database Error','Unable to submit borrow request(s).')
+        except psycopg2.Error: log.exception('Borrow request error'); messagebox.showerror('Database Error','Unable to submit borrow request(s).')
 
     def borrow_tab(self):
         self.btab=tk.Frame(self.nb); self.nb.add(self.btab,text='My Borrowed Items'); c=tk.Frame(self.btab,pady=7); c.pack(fill='x')
@@ -645,8 +682,8 @@ class App:
 
     def load_borrowed(self):
         if not hasattr(self,'btree'):return
-        try: fill_tree(self.btree,q('SELECT trans_id,item_id,qty,timeframe,status,created_at FROM transactions WHERE username=? ORDER BY trans_id DESC',(self.username,),many=True))
-        except sqlite3.Error: log.exception('Borrowed-items load error'); messagebox.showerror('Database Error','Unable to load your borrowing history.')
+        try: fill_tree(self.btree,q('SELECT trans_id,item_id,qty,timeframe,status,created_at FROM transactions WHERE username=%s ORDER BY trans_id DESC',(self.username,),many=True))
+        except psycopg2.Error: log.exception('Borrowed-items load error'); messagebox.showerror('Database Error','Unable to load your borrowing history.')
 
     def return_items(self):
         ids=[]
@@ -656,14 +693,14 @@ class App:
         if not ids:return messagebox.showinfo('Notice',"Only transactions with status 'Approved' can be returned.")
         try:
             with db() as c:
-                for tid in ids:c.execute("UPDATE transactions SET status='Returned' WHERE trans_id=? AND username=? AND status='Approved'",(tid,self.username))
+                for tid in ids:c.execute("UPDATE transactions SET status='Returned' WHERE trans_id=%s AND username=%s AND status='Approved'",(tid,self.username))
             log.info('User %s flagged %d transaction(s) as returned.',self.username,len(ids)); self.load_borrowed(); self.refresh_admin_views() if self.role=='ADMIN' else None; messagebox.showinfo('Success','Selected item(s) flagged as returned. Awaiting Admin confirmation.')
-        except sqlite3.Error: log.exception('Return request error'); messagebox.showerror('Database Error','Unable to process the return.')
+        except psycopg2.Error: log.exception('Return request error'); messagebox.showerror('Database Error','Unable to process the return.')
 
     # ---------------- PROFILE ----------------
     def profile_tab(self):
         self.ptab=tk.Frame(self.nb,padx=25,pady=20); self.nb.add(self.ptab,text='My Profile & Security')
-        a=tk.LabelFrame(self.ptab,text='Account Details',padx=15,pady=15); a.pack(fill='x',pady=(0,15)); row=q('SELECT email,account_status FROM users WHERE username=?',(self.username,),True) or ('Unknown','Unknown')
+        a=tk.LabelFrame(self.ptab,text='Account Details',padx=15,pady=15); a.pack(fill='x',pady=(0,15)); row=q('SELECT email,account_status FROM users WHERE username=%s',(self.username,),True) or ('Unknown','Unknown')
         for text in (f'Username: {self.username}',f'Email: {row[0]}',f'Role Assigned: {self.role}',f'Account Status: {row[1]}'): tk.Label(a,text=text,font=('Arial',11)).pack(anchor='w',pady=2)
         s=tk.LabelFrame(self.ptab,text='Change Password',padx=15,pady=15); s.pack(fill='x',pady=5); tk.Label(s,text='New Password:').pack(anchor='w'); self.newpass=tk.Entry(s,show='*',width=35); self.newpass.pack(anchor='w',pady=5); tk.Label(s,text='8+ characters, uppercase letter, number, special character.').pack(anchor='w',pady=(0,8)); button(s,'Update Password',self.change_password).pack(anchor='w')
 
@@ -671,8 +708,8 @@ class App:
         p=self.newpass.get().strip()
         if not valid_password(p):return messagebox.showerror('Error','Password needs 8+ characters, 1 uppercase, 1 number, and 1 special character (@#$%^&*).')
         try:
-            exec_sql('UPDATE users SET password_hash=?,failed_attempts=0,is_locked=0 WHERE username=?',(hashed(p),self.username)); log.info('User %s changed their password.',self.username); messagebox.showinfo('Success','Password updated successfully. Please log in again.'); self.logout()
-        except sqlite3.Error: log.exception('Change password error'); messagebox.showerror('Database Error','Unable to update the password.')
+            exec_sql('UPDATE users SET password_hash=%s,failed_attempts=0,is_locked=FALSE WHERE username=%s',(hashed(p),self.username)); log.info('User %s changed their password.',self.username); messagebox.showinfo('Success','Password updated successfully. Please log in again.'); self.logout()
+        except psycopg2.Error: log.exception('Change password error'); messagebox.showerror('Database Error','Unable to update the password.')
 
     # ---------------- ADMIN ----------------
     def admin_tab(self):
@@ -687,17 +724,17 @@ class App:
             fill_tree(self.atree,q("SELECT username,email,account_status FROM users WHERE role='ADMIN' AND account_status='Pending' ORDER BY username",many=True))
             fill_tree(self.rtree,q("SELECT id,username,status,created_at FROM password_resets WHERE status='Pending' ORDER BY id",many=True))
             fill_tree(self.ttree,q("SELECT trans_id,username,item_id,qty,timeframe,status FROM transactions WHERE status IN ('Pending','Returned') ORDER BY trans_id",many=True))
-        except sqlite3.Error: log.exception('Admin refresh error'); messagebox.showerror('Database Error','Unable to refresh Admin data.')
+        except psycopg2.Error: log.exception('Admin refresh error'); messagebox.showerror('Database Error','Unable to refresh Admin data.')
 
     def approve_admin(self):
         s=self.atree.selection()
         if not s:return messagebox.showinfo('Notice','Select a pending admin registration.')
         u=self.atree.item(s[0],'values')[0]
         try:
-            with db() as c: changed=c.execute("UPDATE users SET account_status='Active' WHERE username=? AND role='ADMIN' AND account_status='Pending'",(u,)).rowcount
+            with db() as c: changed=c.execute("UPDATE users SET account_status='Active' WHERE username=%s AND role='ADMIN' AND account_status='Pending'",(u,)).rowcount
             if changed: log.info("ADMIN %s approved admin account '%s'.",self.username,u); messagebox.showinfo('Approved',f"Admin account '{u}' is now active.")
             self.refresh_admin_views()
-        except sqlite3.Error: log.exception('Approve admin error'); messagebox.showerror('Database Error','Unable to approve the admin account.')
+        except psycopg2.Error: log.exception('Approve admin error'); messagebox.showerror('Database Error','Unable to approve the admin account.')
 
     def reset_selected(self):
         s=self.rtree.selection()
@@ -708,19 +745,19 @@ class App:
         if not rid:return messagebox.showinfo('Notice','Select a pending password reset request.')
         try:
             with db() as c:
-                row=c.execute("SELECT new_password_hash FROM password_resets WHERE id=? AND status='Pending'",(rid,)).fetchone()
+                row=c.execute("SELECT new_password_hash FROM password_resets WHERE id=%s AND status='Pending'",(rid,)).fetchone()
                 if not row:return messagebox.showwarning('Notice','That reset request is no longer pending.')
-                c.execute("UPDATE users SET password_hash=?,failed_attempts=0,is_locked=0,account_status='Active' WHERE username=?",(row[0],u)); c.execute("UPDATE password_resets SET status='Approved' WHERE id=?",(rid,))
+                c.execute("UPDATE users SET password_hash=%s,failed_attempts=0,is_locked=FALSE,account_status='Active' WHERE username=%s",(row[0],u)); c.execute("UPDATE password_resets SET status='Approved' WHERE id=%s",(rid,))
             log.info("ADMIN %s approved reset request %s for '%s'.",self.username,rid,u); messagebox.showinfo('Approved',f"Account '{u}' unlocked with the new password."); self.refresh_admin_views()
-        except sqlite3.Error: log.exception('Approve reset error'); messagebox.showerror('Database Error','Unable to approve the password reset.')
+        except psycopg2.Error: log.exception('Approve reset error'); messagebox.showerror('Database Error','Unable to approve the password reset.')
 
     def reject_reset(self):
         rid,u=self.reset_selected()
         if not rid:return messagebox.showinfo('Notice','Select a pending password reset request.')
         if not messagebox.askyesno('Confirm Rejection',f"Reject the password reset request for '{u}'?"):return
         try:
-            exec_sql("UPDATE password_resets SET status='Rejected' WHERE id=? AND status='Pending'",(rid,)); log.info("ADMIN %s rejected reset request %s for '%s'.",self.username,rid,u); self.refresh_admin_views()
-        except sqlite3.Error: log.exception('Reject reset error'); messagebox.showerror('Database Error','Unable to reject the password reset.')
+            exec_sql("UPDATE password_resets SET status='Rejected' WHERE id=%s AND status='Pending'",(rid,)); log.info("ADMIN %s rejected reset request %s for '%s'.",self.username,rid,u); self.refresh_admin_views()
+        except psycopg2.Error: log.exception('Reject reset error'); messagebox.showerror('Database Error','Unable to reject the password reset.')
 
     def transaction_selected(self):
         s=self.ttree.selection(); return self.ttree.item(s[0],'values') if s else None
@@ -732,14 +769,14 @@ class App:
         if st!='Pending':return messagebox.showwarning('Notice','Only Pending borrow requests can be approved.')
         try:
             with db() as c:
-                row=c.execute('SELECT item_name,quantity FROM hardware WHERE item_id=?',(item,)).fetchone()
+                row=c.execute('SELECT item_name,quantity FROM hardware WHERE item_id=%s',(item,)).fetchone()
                 if not row:return messagebox.showerror('Error','The requested hardware item no longer exists.')
                 name,current=row; qty=int(qty)
                 if qty<=0 or qty>current:return messagebox.showwarning('Insufficient Stock',f"Cannot approve this request for '{name}'. Current available quantity: {current}.")
-                new=current-qty; c.execute('UPDATE hardware SET quantity=?,status=? WHERE item_id=?',(new,status(new),item)); changed=c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=? AND status='Pending'",(tid,)).rowcount
+                new=current-qty; c.execute('UPDATE hardware SET quantity=%s,status=%s WHERE item_id=%s',(new,status(new),item)); changed=c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=%s AND status='Pending'",(tid,)).rowcount
             if changed:
                 log.info('ADMIN %s approved borrow transaction %s for %s unit(s) of item %s for user %s.',self.username,tid,qty,item,u); self.refresh_admin_views(); self.load_inventory(); self.load_borrowed(); messagebox.showinfo('Approved',f'Borrow request #{tid} approved for {u}.')
-        except sqlite3.Error: log.exception('Approve borrow error'); messagebox.showerror('Database Error','Unable to approve the borrow request.')
+        except psycopg2.Error: log.exception('Approve borrow error'); messagebox.showerror('Database Error','Unable to approve the borrow request.')
 
     def confirm_return(self):
         v=self.transaction_selected()
@@ -748,11 +785,11 @@ class App:
         if st!='Returned':return messagebox.showwarning('Notice','Only transactions marked Returned can be confirmed.')
         try:
             with db() as c:
-                row=c.execute('SELECT item_name,quantity FROM hardware WHERE item_id=?',(item,)).fetchone()
+                row=c.execute('SELECT item_name,quantity FROM hardware WHERE item_id=%s',(item,)).fetchone()
                 if not row:return messagebox.showerror('Error','The original hardware item no longer exists.')
-                name,current=row; qty=int(qty); c.execute('UPDATE hardware SET quantity=?,status=? WHERE item_id=?',(current+qty,status(current+qty),item)); c.execute("UPDATE transactions SET status='Completed' WHERE trans_id=? AND status='Returned'",(tid,))
+                name,current=row; qty=int(qty); c.execute('UPDATE hardware SET quantity=%s,status=%s WHERE item_id=%s',(current+qty,status(current+qty),item)); c.execute("UPDATE transactions SET status='Completed' WHERE trans_id=%s AND status='Returned'",(tid,))
             log.info('ADMIN %s confirmed return for transaction %s (%s unit(s) of %s).',self.username,tid,qty,name); self.refresh_admin_views(); self.load_inventory(); self.load_borrowed(); messagebox.showinfo('Success','Return confirmed and inventory quantity restored.')
-        except sqlite3.Error: log.exception('Confirm return error'); messagebox.showerror('Database Error','Unable to confirm the return.')
+        except psycopg2.Error: log.exception('Confirm return error'); messagebox.showerror('Database Error','Unable to confirm the return.')
 
     def logout(self):
         log.info('User %s logged out.',self.username); self.logout_cb()
