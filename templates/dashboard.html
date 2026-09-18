@@ -28,7 +28,9 @@
                         </form>
                     {% endif %}
                     
-                    <form action="{{ url_for('admin_delete') if session['role'] == 'ADMIN' else '' }}" method="POST">
+                    {% if session['role'] == 'ADMIN' %}
+                    <form action="{{ url_for('admin_delete') }}" method="POST">
+                    {% endif %}
                         <table class="table table-bordered table-striped table-sm">
                             <thead class="table-dark">
                                 <tr>
@@ -64,10 +66,10 @@
                                 {% endfor %}
                             </tbody>
                         </table>
-                        {% if session['role'] == 'ADMIN' %}
+                    {% if session['role'] == 'ADMIN' %}
                             <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete selected items?')">Delete Selected</button>
-                        {% endif %}
                     </form>
+                    {% endif %}
                 </div>
             </div>
         </div>
