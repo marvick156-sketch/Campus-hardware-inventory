@@ -86,7 +86,7 @@
                                     <tr>
                                         <th>Select</th>
                                         <th>Trans ID</th>
-                                        <th>Item ID</th>
+                                        <th>Item Name</th>
                                         <th>Qty</th>
                                     </tr>
                                 </thead>
@@ -95,8 +95,8 @@
                                     <tr>
                                         <td><input type="checkbox" name="loan_ids" value="{{ loan[0] }}"></td>
                                         <td>{{ loan[0] }}</td>
-                                        <td>{{ loan[1] }}</td>
                                         <td>{{ loan[2] }}</td>
+                                        <td>{{ loan[3] }}</td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>
@@ -112,10 +112,10 @@
                     <div class="card-header bg-secondary text-white"><h5>Pending Borrow Requests</h5></div>
                     <div class="card-body">
                         <table class="table table-sm">
-                            <thead><tr><th>Trans ID</th><th>Item ID</th><th>Qty</th><th>Status</th></tr></thead>
+                            <thead><tr><th>Trans ID</th><th>Item Name</th><th>Qty</th><th>Status</th></tr></thead>
                             <tbody>
                                 {% for req in pending_borrow_requests %}
-                                <tr><td>{{ req[0] }}</td><td>{{ req[1] }}</td><td>{{ req[2] }}</td><td>{{ req[4] }}</td></tr>
+                                <tr><td>{{ req[0] }}</td><td>{{ req[2] }}</td><td>{{ req[3] }}</td><td>{{ req[5] }}</td></tr>
                                 {% endfor %}
                             </tbody>
                         </table>
@@ -130,12 +130,12 @@
                     <div class="card-body">
                         <form action="{{ url_for('admin_borrow_action') }}" method="POST">
                             <table class="table table-sm">
-                                <thead><tr><th>Select</th><th>Trans</th><th>User</th><th>Qty</th></tr></thead>
+                                <thead><tr><th>Select</th><th>Trans</th><th>User</th><th>Item Name</th><th>Qty</th></tr></thead>
                                 <tbody>
                                     {% for req in pending_borrows %}
                                     <tr>
                                         <td><input type="checkbox" name="loan_ids" value="{{ req[0] }}"></td>
-                                        <td>{{ req[0] }}</td><td>{{ req[1] }}</td><td>{{ req[3] }}</td>
+                                        <td>{{ req[0] }}</td><td>{{ req[1] }}</td><td>{{ req[3] }}</td><td>{{ req[4] }}</td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>
@@ -153,12 +153,12 @@
                     <div class="card-body">
                         <form action="{{ url_for('admin_return_action') }}" method="POST">
                             <table class="table table-sm">
-                                <thead><tr><th>Select</th><th>Trans</th><th>User</th><th>Qty</th></tr></thead>
+                                <thead><tr><th>Select</th><th>Trans</th><th>User</th><th>Item Name</th><th>Qty</th></tr></thead>
                                 <tbody>
                                     {% for req in pending_returns %}
                                     <tr>
                                         <td><input type="checkbox" name="loan_ids" value="{{ req[0] }}"></td>
-                                        <td>{{ req[0] }}</td><td>{{ req[1] }}</td><td>{{ req[3] }}</td>
+                                        <td>{{ req[0] }}</td><td>{{ req[1] }}</td><td>{{ req[3] }}</td><td>{{ req[4] }}</td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>

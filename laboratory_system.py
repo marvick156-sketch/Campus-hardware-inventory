@@ -292,27 +292,27 @@ class InventoryController:
 
     @staticmethod
     def get_user_active_loans(username):
-        return q("SELECT trans_id, item_id, qty, timeframe, status, created_at FROM transactions WHERE username=%s AND status='Approved' ORDER BY trans_id DESC", (username,), many=True) or []
+        return q("SELECT t.trans_id, t.item_id, h.item_name, t.qty, t.timeframe, t.status, t.created_at FROM transactions t LEFT JOIN hardware h ON t.item_id = h.item_id WHERE t.username=%s AND t.status='Approved' ORDER BY t.trans_id DESC", (username,), many=True) or []
 
     @staticmethod
     def get_user_pending_borrows(username):
-        return q("SELECT trans_id, item_id, qty, timeframe, status, created_at FROM transactions WHERE username=%s AND status='Pending' ORDER BY trans_id DESC", (username,), many=True) or []
+        return q("SELECT t.trans_id, t.item_id, h.item_name, t.qty, t.timeframe, t.status, t.created_at FROM transactions t LEFT JOIN hardware h ON t.item_id = h.item_id WHERE t.username=%s AND t.status='Pending' ORDER BY t.trans_id DESC", (username,), many=True) or []
 
     @staticmethod
     def get_user_loan_history(username):
-        return q("SELECT trans_id, item_id, qty, timeframe, status, created_at FROM transactions WHERE username=%s ORDER BY trans_id DESC", (username,), many=True) or []
+        return q("SELECT t.trans_id, t.item_id, h.item_name, t.qty, t.timeframe, t.status, t.created_at FROM transactions t LEFT JOIN hardware h ON t.item_id = h.item_id WHERE t.username=%s ORDER BY t.trans_id DESC", (username,), many=True) or []
 
     @staticmethod
     def get_pending_returns():
-        return q("SELECT trans_id, username, item_id, qty, timeframe, status FROM transactions WHERE status='Returned' ORDER BY trans_id", many=True) or []
+        return q("SELECT t.trans_id, t.username, t.item_id, h.item_name, t.qty, t.timeframe, t.status FROM transactions t LEFT JOIN hardware h ON t.item_id = h.item_id WHERE t.status='Returned' ORDER BY t.trans_id", many=True) or []
 
     @staticmethod
     def get_pending_borrows():
-        return q("SELECT trans_id, username, item_id, qty, timeframe, status FROM transactions WHERE status='Pending' ORDER BY trans_id", many=True) or []
+        return q("SELECT t.trans_id, t.username, t.item_id, h.item_name, t.qty, t.timeframe, t.status FROM transactions t LEFT JOIN hardware h ON t.item_id = h.item_id WHERE t.status='Pending' ORDER BY t.trans_id", many=True) or []
 
     @staticmethod
     def get_all_loans_history():
-        return q("SELECT trans_id, username, item_id, qty, timeframe, status FROM transactions ORDER BY trans_id DESC", many=True) or []
+        return q("SELECT t.trans_id, t.username, t.item_id, h.item_name, t.qty, t.timeframe, t.status FROM transactions t LEFT JOIN hardware h ON t.item_id = h.item_id ORDER BY t.trans_id DESC", many=True) or []
 
     @staticmethod
     def borrow_item(username, item_id, quantity):

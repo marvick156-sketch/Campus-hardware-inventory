@@ -8,6 +8,10 @@ from flask import (
 )
 from functools import wraps
 import os
+from dotenv import load_dotenv
+
+# Load the secret variables from the .env file
+load_dotenv()
 
 from laboratory_system import (
     init_db, AuthController, InventoryController
@@ -80,8 +84,7 @@ def register():
         
     if not username or not email or not password:
         flash("All registration fields are required.", "danger")
-        return redirect(url_for("login"))
-        
+        return redirect(url_for("login"))         
     ok, msg = AuthController.register_user(username, email, password, role=role)
     flash(msg, "success" if ok else "warning")
     return redirect(url_for("login"))
