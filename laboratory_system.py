@@ -395,8 +395,9 @@ class InventoryController:
                         hw = c.execute("SELECT quantity FROM hardware WHERE item_id=%s", (item_id,)).fetchone()
                         if hw and hw[0] >= qty:
                             new_qty = hw[0] - qty
+                            current_date = datetime.now().strftime('%Y-%m-%d %H:%M')
                             c.execute("UPDATE hardware SET quantity=%s, status=%s WHERE item_id=%s", (new_qty, status(new_qty), item_id))
-                            c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=%s", (tid,))
+                            c.execute("UPDATE transactions SET status='Approved', timeframe=%s WHERE trans_id=%s", (current_date, tid))
                             count += 1
                     else:
                         c.execute("UPDATE transactions SET status='Rejected' WHERE trans_id=%s", (tid,))
@@ -413,16 +414,18 @@ class InventoryController:
         try:
             with db() as c:
                 for tid in loan_ids:
-                    req = c.execute("SELECT item_id, qty FROM transactions WHERE trans_id=%s AND status='Returned'", (tid,)).fetchone()
+                    req = c.execute("SELECT item_id, qty, timeframe FROM transactions WHERE trans_id=%s AND status='Returned'", (tid,)).fetchone()
                     if not req: continue
-                    item_id, qty = req
+                    item_id, qty, existing_timeframe = req
                     
                     if approve:
                         hw = c.execute("SELECT quantity FROM hardware WHERE item_id=%s", (item_id,)).fetchone()
                         if hw:
                             new_qty = hw[0] + qty
+                            current_date = datetime.now().strftime('%Y-%m-%d %H:%M')
+                            new_timeframe = f"{existing_timeframe} | Ret: {current_date}"
                             c.execute("UPDATE hardware SET quantity=%s, status=%s WHERE item_id=%s", (new_qty, status(new_qty), item_id))
-                            c.execute("UPDATE transactions SET status='Completed' WHERE trans_id=%s", (tid,))
+                            c.execute("UPDATE transactions SET status='Completed', timeframe=%s WHERE trans_id=%s", (new_timeframe, tid))
                             count += 1
                     else:
                         c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=%s", (tid,))
