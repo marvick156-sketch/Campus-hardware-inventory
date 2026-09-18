@@ -122,6 +122,27 @@
                     </div>
                 </div>
             </div>
+
+            <!-- USER HISTORY -->
+            <div class="col-md-12 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-dark text-white"><h5>My Borrowing & Return History</h5></div>
+                    <div class="card-body" style="max-height: 250px; overflow-y: auto;">
+                        <table class="table table-sm table-striped">
+                            <thead><tr><th>Trans ID</th><th>Item Name</th><th>Qty</th><th>Date Borrowed</th><th>Status</th><th>Date</th></tr></thead>
+                            <tbody>
+                                {% for record in history %}
+                                <tr>
+                                    <td>{{ record[0] }}</td><td>{{ record[2] }}</td><td>{{ record[3] }}</td><td>{{ record[4] }}</td>
+                                    <td><span class="badge {{ 'bg-success' if record[5]=='Completed' or record[5]=='Returned' else 'bg-secondary' }}">{{ record[5] }}</span></td>
+                                    <td>{{ record[6] }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         {% else %}
             <!-- ADMIN SPECIFIC VIEWS -->
             <div class="col-md-3 mb-4">
@@ -211,6 +232,26 @@
                             </table>
                             <button type="submit" class="btn btn-success btn-sm w-100">Approve Admins</button>
                         </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ADMIN BORROW AUDIT / HISTORY -->
+            <div class="col-md-12 mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-secondary text-white"><h5>All Transactions (Borrow Audit & Return History)</h5></div>
+                    <div class="card-body" style="max-height: 300px; overflow-y: auto;">
+                        <table class="table table-sm table-striped">
+                            <thead><tr><th>Trans ID</th><th>User</th><th>Item Name</th><th>Qty</th><th>Date Borrowed</th><th>Status</th></tr></thead>
+                            <tbody>
+                                {% for record in all_loans %}
+                                <tr>
+                                    <td>{{ record[0] }}</td><td>{{ record[1] }}</td><td>{{ record[3] }}</td><td>{{ record[4] }}</td><td>{{ record[5] }}</td>
+                                    <td><span class="badge {{ 'bg-success' if record[6]=='Completed' or record[6]=='Returned' else 'bg-secondary' }}">{{ record[6] }}</span></td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
