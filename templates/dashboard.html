@@ -82,12 +82,21 @@
                     <div class="card-body">
                         <form action="{{ url_for('return_request') }}" method="POST">
                             <table class="table table-sm">
-                                <thead><tr><th>Select</th><th>Trans ID</th><th>Item ID</th><th>Qty</th><th>Timeframe</th></tr></thead>
+                                <thead>
+                                    <tr>
+                                        <th>Select</th>
+                                        <th>Trans ID</th>
+                                        <th>Item ID</th>
+                                        <th>Qty</th>
+                                    </tr>
+                                </thead>
                                 <tbody>
                                     {% for loan in active_loans %}
                                     <tr>
                                         <td><input type="checkbox" name="loan_ids" value="{{ loan[0] }}"></td>
-                                        <td>{{ loan[0] }}</td><td>{{ loan[1] }}</td><td>{{ loan[2] }}</td><td>{{ loan[3] }}</td>
+                                        <td>{{ loan[0] }}</td>
+                                        <td>{{ loan[1] }}</td>
+                                        <td>{{ loan[2] }}</td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>
