@@ -1,7 +1,7 @@
 import csv, logging, os, re
 from datetime import datetime
 import bcrypt
-import psycopg2
+import psycopg
 from dotenv import load_dotenv
 
 # Load environment variables (ensures DATABASE_URL is available)
@@ -36,12 +36,12 @@ log = logging.getLogger('HardwareApp')
 
 # ========================= SUPABASE CONNECTION SHIM =========================
 class DBConnection:
-    """Wrapper to make psycopg2 act like the previous sqlite3 connection workflow."""
+    """Wrapper to make psycopg act like the previous sqlite3 connection workflow."""
     def __init__(self):
         db_url = os.environ.get("DATABASE_URL")
         if not db_url:
             raise ValueError("DATABASE_URL is missing. Please check your .env file.")
-        self.conn = psycopg2.connect(db_url)
+        self.conn = psycopg.connect(db_url)
         
     def __enter__(self):
         return self
@@ -144,7 +144,7 @@ def init_db():
                     c.execute('''INSERT INTO users(username,email,password_hash,role,account_status)
                                    VALUES(%s,%s,%s,%s,%s)''', ('admin','admin@nu.edu.ph',hashed('Admin@123'),'ADMIN','Active'))
                     log.info('Default ADMIN account created (admin / Admin@123).')
-    except psycopg2.Error:
+    except psycopg.Error:
         log.exception('Database setup error')
         raise
 
@@ -179,7 +179,7 @@ class AuthController:
 
             exec_sql('UPDATE users SET failed_attempts=%s WHERE username=%s', (attempts, username))
             return False, f"Invalid password. {3 - attempts} attempt(s) left.", None, False, None
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception('Login DB error')
             return False, "Database error during login.", None, False, None
 
@@ -194,9 +194,9 @@ class AuthController:
             log.info("Registered %s account: %s (status=%s)", role, username, st)
             msg = "Registration submitted. Admin accounts require approval." if role == 'ADMIN' else "Registered successfully."
             return True, msg
-        except psycopg2.IntegrityError:
+        except psycopg.IntegrityError:
             return False, "Username or Email already exists."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception('Registration DB error')
             return False, "Database error during registration."
 
@@ -212,7 +212,7 @@ class AuthController:
                           (username, hashed(new_password), 'Pending', now()))
             log.info("Password reset requested for '%s'.", username)
             return True, "Password reset request submitted for Admin approval."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception('Reset request DB error')
             return False, "Database error submitting reset request."
 
@@ -234,7 +234,7 @@ class AuthController:
                     changed = c.execute("UPDATE users SET account_status='Active' WHERE username=%s AND role='ADMIN' AND account_status='Pending'", (u,)).rowcount
                     count += changed
             return True, f"Approved {count} admin account(s)."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception("Approve admin error")
             return False, "Database error approving admins."
 
@@ -249,7 +249,7 @@ class AuthController:
                      (hashed(new_password), username))
             log.info("User %s changed password via web.", username)
             return True, "Password updated successfully."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception("Change password DB error")
             return False, "Database error updating password."
 
@@ -272,7 +272,7 @@ class AuthController:
                             log.info("Admin rejected reset %s for %s", rid, u)
                         count += 1
             return True, f"Processed {count} reset request(s)."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception("Process reset DB error")
             return False, "Database error processing resets."
 
@@ -326,7 +326,7 @@ class InventoryController:
                           (item_id, username, quantity, "Web Request", 'Pending', now()))
             log.info("User %s requested to borrow %s of item %s.", username, quantity, item_id)
             return True, "Borrow request submitted for Admin approval."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception("Borrow request DB error")
             return False, "Database error submitting borrow request."
 
@@ -341,7 +341,7 @@ class InventoryController:
                     count += changed
             log.info("Flagged %s transactions as returned.", count)
             return True, f"Requested return for {count} item(s)."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception("Return request DB error")
             return False, "Database error requesting return."
 
@@ -360,7 +360,7 @@ class InventoryController:
                               (name, category, quantity, unit_price, status(quantity)))
                     log.info("Added inventory item '%s'.", name)
                     return True, "Hardware item added successfully."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception("Save item DB error")
             return False, "Database error saving item."
 
@@ -376,7 +376,7 @@ class InventoryController:
                     c.execute('DELETE FROM hardware WHERE item_id=%s', (iid,))
                     count += 1
             return True, f"Deleted {count} hardware item(s)."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception("Delete items DB error")
             return False, "Database error deleting items."
 
@@ -403,7 +403,7 @@ class InventoryController:
                         c.execute("UPDATE transactions SET status='Rejected' WHERE trans_id=%s", (tid,))
                         count += 1
             return True, f"Processed {count} borrow request(s)."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception("Process borrow DB error")
             return False, "Database error processing borrows."
 
@@ -431,7 +431,7 @@ class InventoryController:
                         c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=%s", (tid,))
                         count += 1
             return True, f"Processed {count} return request(s)."
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception("Process return DB error")
             return False, "Database error processing returns."
 
@@ -532,8 +532,8 @@ class AuthWindow:
             st='Pending' if r=='ADMIN' else 'Active'; log.info('Registered %s account: %s (status=%s)',r,u,st)
             messagebox.showinfo('Success','Registration submitted. Admin accounts require approval before they can log in.' if r=='ADMIN' else 'Registered successfully.')
             self.login_screen()
-        except psycopg2.IntegrityError: messagebox.showerror('Error','Username or Email already exists.')
-        except psycopg2.Error:
+        except psycopg.IntegrityError: messagebox.showerror('Error','Username or Email already exists.')
+        except psycopg.Error:
             log.exception('Registration database error'); messagebox.showerror('Database Error','Unable to register account.')
 
     def login(self):
@@ -556,7 +556,7 @@ class AuthWindow:
             else:
                 exec_sql('UPDATE users SET failed_attempts=%s WHERE username=%s',(attempts,u)); msg=f'Invalid password. {3-attempts} attempt(s) left.'
             messagebox.showerror('Login Failed',msg)
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception('Login database error'); messagebox.showerror('Database Error','Unable to complete login.')
 
     def submit_reset(self):
@@ -569,7 +569,7 @@ class AuthWindow:
                 c.execute("DELETE FROM password_resets WHERE username=%s AND status='Pending'",(u,))
                 c.execute("INSERT INTO password_resets(username,new_password_hash,status,created_at) VALUES(%s,%s,%s,%s)",(u,hashed(p),'Pending',now()))
             log.info("Password reset requested for '%s'.",u); messagebox.showinfo('Success','Password reset request submitted for Admin approval.'); self.login_screen()
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception('Password reset request error'); messagebox.showerror('Database Error','Unable to submit password reset request.')
 
 
@@ -613,7 +613,7 @@ class App:
         if not hasattr(self,'tree'): return
         s=f'%{self.search.get().strip()}%'
         try: fill_tree(self.tree,q('SELECT item_id,item_name,category,quantity,unit_price,status FROM hardware WHERE item_name LIKE %s OR category LIKE %s ORDER BY item_id',(s,s),many=True))
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception('Inventory load error'); messagebox.showerror('Database Error','Unable to load inventory.')
 
     def clear_inventory(self):
@@ -640,7 +640,7 @@ class App:
                 if self.sel.get(): c.execute('UPDATE hardware SET item_name=%s,category=%s,quantity=%s,unit_price=%s,status=%s WHERE item_id=%s',(name,cat,qty,price,status(qty),self.sel.get())); action=f'updated item ID {self.sel.get()}'
                 else: c.execute('INSERT INTO hardware(item_name,category,quantity,unit_price,status) VALUES(%s,%s,%s,%s,%s)',(name,cat,qty,price,status(qty))); action=f"added inventory item '{name}'"
             log.info('ADMIN %s %s.',self.username,action); self.clear_inventory(); messagebox.showinfo('Success','Hardware item saved successfully.')
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception('Save inventory error'); messagebox.showerror('Database Error','Unable to save the hardware item.')
 
     def delete_item(self):
@@ -652,7 +652,7 @@ class App:
                 if c.execute('SELECT COUNT(*) FROM transactions WHERE item_id=%s',(item,)).fetchone()[0]: return messagebox.showwarning('Cannot Delete','This item has transaction history and cannot be deleted. Keep it in the catalog for record integrity.')
                 c.execute('DELETE FROM hardware WHERE item_id=%s',(item,))
             log.info('ADMIN %s deleted item ID %s.',self.username,item); self.clear_inventory(); messagebox.showinfo('Success','Hardware item deleted.')
-        except psycopg2.Error:
+        except psycopg.Error:
             log.exception('Delete inventory error'); messagebox.showerror('Database Error','Unable to delete the hardware item.')
 
     def export_csv(self):
@@ -662,7 +662,7 @@ class App:
             if not path:return
             with open(path,'w',newline='',encoding='utf-8-sig') as f: csv.writer(f).writerows([['ID','Name','Category','Qty','Price','Status'],*rows])
             log.info('User %s exported inventory CSV to %s.',self.username,path); messagebox.showinfo('Success',f'Inventory exported successfully to:\n{path}')
-        except (OSError,psycopg2.Error): log.exception('CSV export error'); messagebox.showerror('Export Error','Unable to export the inventory.')
+        except (OSError,psycopg.Error): log.exception('CSV export error'); messagebox.showerror('Export Error','Unable to export the inventory.')
 
     # ---------------- BORROW / RETURN ----------------
     def borrow_request(self):
@@ -684,7 +684,7 @@ class App:
                     c.execute("INSERT INTO transactions(item_id,username,qty,timeframe,status,created_at) VALUES(%s,%s,%s,%s,%s,%s)",(item_id,self.username,qty,tf.strip(),'Pending',now())); made+=1
             if made: log.info('User %s submitted %d borrow request(s).',self.username,made); messagebox.showinfo('Success',f'{made} borrow request(s) submitted for Admin approval.')
             self.load_borrowed()
-        except psycopg2.Error: log.exception('Borrow request error'); messagebox.showerror('Database Error','Unable to submit borrow request(s).')
+        except psycopg.Error: log.exception('Borrow request error'); messagebox.showerror('Database Error','Unable to submit borrow request(s).')
 
     def borrow_tab(self):
         self.btab=tk.Frame(self.nb); self.nb.add(self.btab,text='My Borrowed Items'); c=tk.Frame(self.btab,pady=7); c.pack(fill='x')
@@ -694,7 +694,7 @@ class App:
     def load_borrowed(self):
         if not hasattr(self,'btree'):return
         try: fill_tree(self.btree,q('SELECT trans_id,item_id,qty,timeframe,status,created_at FROM transactions WHERE username=%s ORDER BY trans_id DESC',(self.username,),many=True))
-        except psycopg2.Error: log.exception('Borrowed-items load error'); messagebox.showerror('Database Error','Unable to load your borrowing history.')
+        except psycopg.Error: log.exception('Borrowed-items load error'); messagebox.showerror('Database Error','Unable to load your borrowing history.')
 
     def return_items(self):
         ids=[]
@@ -706,7 +706,7 @@ class App:
             with db() as c:
                 for tid in ids:c.execute("UPDATE transactions SET status='Returned' WHERE trans_id=%s AND username=%s AND status='Approved'",(tid,self.username))
             log.info('User %s flagged %d transaction(s) as returned.',self.username,len(ids)); self.load_borrowed(); self.refresh_admin_views() if self.role=='ADMIN' else None; messagebox.showinfo('Success','Selected item(s) flagged as returned. Awaiting Admin confirmation.')
-        except psycopg2.Error: log.exception('Return request error'); messagebox.showerror('Database Error','Unable to process the return.')
+        except psycopg.Error: log.exception('Return request error'); messagebox.showerror('Database Error','Unable to process the return.')
 
     # ---------------- PROFILE ----------------
     def profile_tab(self):
@@ -720,7 +720,7 @@ class App:
         if not valid_password(p):return messagebox.showerror('Error','Password needs 8+ characters, 1 uppercase, 1 number, and 1 special character (@#$%^&*).')
         try:
             exec_sql('UPDATE users SET password_hash=%s,failed_attempts=0,is_locked=FALSE WHERE username=%s',(hashed(p),self.username)); log.info('User %s changed their password.',self.username); messagebox.showinfo('Success','Password updated successfully. Please log in again.'); self.logout()
-        except psycopg2.Error: log.exception('Change password error'); messagebox.showerror('Database Error','Unable to update the password.')
+        except psycopg.Error: log.exception('Change password error'); messagebox.showerror('Database Error','Unable to update the password.')
 
     # ---------------- ADMIN ----------------
     def admin_tab(self):
@@ -735,7 +735,7 @@ class App:
             fill_tree(self.atree,q("SELECT username,email,account_status FROM users WHERE role='ADMIN' AND account_status='Pending' ORDER BY username",many=True))
             fill_tree(self.rtree,q("SELECT id,username,status,created_at FROM password_resets WHERE status='Pending' ORDER BY id",many=True))
             fill_tree(self.ttree,q("SELECT trans_id,username,item_id,qty,timeframe,status FROM transactions WHERE status IN ('Pending','Returned') ORDER BY trans_id",many=True))
-        except psycopg2.Error: log.exception('Admin refresh error'); messagebox.showerror('Database Error','Unable to refresh Admin data.')
+        except psycopg.Error: log.exception('Admin refresh error'); messagebox.showerror('Database Error','Unable to refresh Admin data.')
 
     def approve_admin(self):
         s=self.atree.selection()
@@ -745,7 +745,7 @@ class App:
             with db() as c: changed=c.execute("UPDATE users SET account_status='Active' WHERE username=%s AND role='ADMIN' AND account_status='Pending'",(u,)).rowcount
             if changed: log.info("ADMIN %s approved admin account '%s'.",self.username,u); messagebox.showinfo('Approved',f"Admin account '{u}' is now active.")
             self.refresh_admin_views()
-        except psycopg2.Error: log.exception('Approve admin error'); messagebox.showerror('Database Error','Unable to approve the admin account.')
+        except psycopg.Error: log.exception('Approve admin error'); messagebox.showerror('Database Error','Unable to approve the admin account.')
 
     def reset_selected(self):
         s=self.rtree.selection()
@@ -760,7 +760,7 @@ class App:
                 if not row:return messagebox.showwarning('Notice','That reset request is no longer pending.')
                 c.execute("UPDATE users SET password_hash=%s,failed_attempts=0,is_locked=FALSE,account_status='Active' WHERE username=%s",(row[0],u)); c.execute("UPDATE password_resets SET status='Approved' WHERE id=%s",(rid,))
             log.info("ADMIN %s approved reset request %s for '%s'.",self.username,rid,u); messagebox.showinfo('Approved',f"Account '{u}' unlocked with the new password."); self.refresh_admin_views()
-        except psycopg2.Error: log.exception('Approve reset error'); messagebox.showerror('Database Error','Unable to approve the password reset.')
+        except psycopg.Error: log.exception('Approve reset error'); messagebox.showerror('Database Error','Unable to approve the password reset.')
 
     def reject_reset(self):
         rid,u=self.reset_selected()
@@ -768,7 +768,7 @@ class App:
         if not messagebox.askyesno('Confirm Rejection',f"Reject the password reset request for '{u}'?"):return
         try:
             exec_sql("UPDATE password_resets SET status='Rejected' WHERE id=%s AND status='Pending'",(rid,)); log.info("ADMIN %s rejected reset request %s for '%s'.",self.username,rid,u); self.refresh_admin_views()
-        except psycopg2.Error: log.exception('Reject reset error'); messagebox.showerror('Database Error','Unable to reject the password reset.')
+        except psycopg.Error: log.exception('Reject reset error'); messagebox.showerror('Database Error','Unable to reject the password reset.')
 
     def transaction_selected(self):
         s=self.ttree.selection(); return self.ttree.item(s[0],'values') if s else None
@@ -787,7 +787,7 @@ class App:
                 new=current-qty; c.execute('UPDATE hardware SET quantity=%s,status=%s WHERE item_id=%s',(new,status(new),item)); changed=c.execute("UPDATE transactions SET status='Approved' WHERE trans_id=%s AND status='Pending'",(tid,)).rowcount
             if changed:
                 log.info('ADMIN %s approved borrow transaction %s for %s unit(s) of item %s for user %s.',self.username,tid,qty,item,u); self.refresh_admin_views(); self.load_inventory(); self.load_borrowed(); messagebox.showinfo('Approved',f'Borrow request #{tid} approved for {u}.')
-        except psycopg2.Error: log.exception('Approve borrow error'); messagebox.showerror('Database Error','Unable to approve the borrow request.')
+        except psycopg.Error: log.exception('Approve borrow error'); messagebox.showerror('Database Error','Unable to approve the borrow request.')
 
     def confirm_return(self):
         v=self.transaction_selected()
@@ -800,7 +800,7 @@ class App:
                 if not row:return messagebox.showerror('Error','The original hardware item no longer exists.')
                 name,current=row; qty=int(qty); c.execute('UPDATE hardware SET quantity=%s,status=%s WHERE item_id=%s',(current+qty,status(current+qty),item)); c.execute("UPDATE transactions SET status='Completed' WHERE trans_id=%s AND status='Returned'",(tid,))
             log.info('ADMIN %s confirmed return for transaction %s (%s unit(s) of %s).',self.username,tid,qty,name); self.refresh_admin_views(); self.load_inventory(); self.load_borrowed(); messagebox.showinfo('Success','Return confirmed and inventory quantity restored.')
-        except psycopg2.Error: log.exception('Confirm return error'); messagebox.showerror('Database Error','Unable to confirm the return.')
+        except psycopg.Error: log.exception('Confirm return error'); messagebox.showerror('Database Error','Unable to confirm the return.')
 
     def logout(self):
         log.info('User %s logged out.',self.username); self.logout_cb()
